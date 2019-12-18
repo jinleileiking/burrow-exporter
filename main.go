@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/parnurzeal/gorequest"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rs/zerolog/log"
 )
 
 type BurrowLagRet struct {
@@ -91,23 +93,28 @@ func getAllConsumers() []string {
 	resp, body, errs := gorequest.New().Get(fmt.Sprintf("http://%s/v3/kafka/%s/consumer", *burrowAddr, *cluster)).End()
 
 	if resp.StatusCode != 200 {
-		panic("get consumer not 200")
+		log.Debug().Msgf("get consumer not 200, code: %d", resp.StatusCode)
+		return nil
 	}
 	if errs != nil {
-		panic(errs)
+		log.Debug().Msgf("errs: %#v", errs)
+		return nil
 	}
 
 	ret := consumerRet{}
 
 	if err := json.Unmarshal([]byte(body), &ret); err != nil {
-		fmt.Printf("please check input, response is: %s", body)
-		panic(err)
+		log.Debug().Msgf("please check input, response is: %s, err is %#v", body, err)
+		return nil
 	}
 
 	return ret.Consumers
 }
 
 func main() {
+
+	log.Logger = log.With().Caller().Logger()
+
 	flag.Parse()
 
 	col := burrowCollect{
@@ -130,10 +137,12 @@ func main() {
 	server.Handle("/metrics", promhttp.Handler())
 	go func() {
 		if err := http.ListenAndServe(fmt.Sprintf("0.0.0.0:%d", *promPort), server); err != nil {
-			panic("listen promPort error")
+			log.Debug().Msgf("listen promPort error", err.Error())
+			os.Exit(-1)
 		}
 	}()
 
+	log.Debug().Msg("burrow-exporter started")
 	for {
 		// consumers := getAllConsumers()
 
@@ -147,20 +156,23 @@ func main() {
 }
 
 func processConsumerGroup(cg string) {
-	resp, body, errs := gorequest.New().Get(fmt.Sprintf("http://%s/v3/kafka/%s/consumer/%s/lag", *burrowAddr, *cluster, cg)).End()
+	url := fmt.Sprintf("http://%s/v3/kafka/%s/consumer/%s/lag", *burrowAddr, *cluster, cg)
+	resp, body, errs := gorequest.New().Get(url).End()
+	if errs != nil {
+		log.Debug().Msgf("errs is:%#v, url:%s ", errs, url)
+		return
+	}
 
 	if resp.StatusCode != 200 {
-		panic(fmt.Sprintf("not 200, statuscode is:%d", resp.StatusCode))
-	}
-	if errs != nil {
-		panic(errs)
+		log.Debug().Msgf("not 200, statuscode is:%d", resp.StatusCode)
+		return
 	}
 
 	ret := BurrowLagRet{}
 
 	if err := json.Unmarshal([]byte(body), &ret); err != nil {
-		fmt.Printf("please check input, response is: %s", body)
-		panic(err)
+		log.Debug().Msgf("please check input, response is: %s, err: %#v", body, err)
+		return
 	}
 
 	lag = int(ret.Status.Totallag)
